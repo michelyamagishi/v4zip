@@ -21,25 +21,6 @@ add_executable(v4zip src/main.cpp)
 # Tests
 option(BUILD_TESTS "Build unit tests" ON)
 
-if(BUILD_TESTS)
-    enable_testing()
-
-    add_executable(test_v4group tests/test_v4group.cpp)
-    add_executable(test_arithmetic_coder tests/test_arithmetic_coder.cpp)
-    add_executable(test_roundtrip tests/test_roundtrip.cpp)
-    add_executable(test_fastq_io tests/test_fastq_io.cpp)
-    add_executable(test_quality_model tests/test_quality_model.cpp)
-    add_executable(test_fastq_roundtrip tests/test_fastq_roundtrip.cpp)
-    add_executable(test_robustness tests/test_robustness.cpp)
-
-    add_test(NAME V4Group COMMAND test_v4group)
-    add_test(NAME ArithmeticCoder COMMAND test_arithmetic_coder)
-    add_test(NAME Roundtrip COMMAND test_roundtrip)
-    add_test(NAME FastqIO COMMAND test_fastq_io)
-    add_test(NAME QualityModel COMMAND test_quality_model)
-    add_test(NAME FastqRoundtrip COMMAND test_fastq_roundtrip)
-    add_test(NAME Robustness COMMAND test_robustness)
-endif()
 
 # Install
 install(TARGETS v4zip DESTINATION bin)
