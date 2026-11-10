@@ -1,0 +1,39 @@
+name: Compilar v4zip
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compilar:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Baixar o codigo
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libzstd-dev
+
+      - name: Compilar
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel 2
+          ./build/v4zip --version
+
+      - name: Empacotar o executavel
+        run: tar -czf v4zip-linux-x86_64.tar.gz -C build v4zip
+
+      - name: Disponibilizar para download
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: v4zip-linux-x86_64.tar.gz
+          path: v4zip-linux-x86_64.tar.gz
+          archive: false
+          if-no-files-found: error
