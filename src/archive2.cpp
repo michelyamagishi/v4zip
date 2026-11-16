@@ -1,6 +1,7 @@
 #include "v4zip/archive.hpp"
 #include "detail/bytes.hpp"
 #include "detail/dna_config.hpp"
+#include "detail/quality_coder.hpp"
 #include "detail/side_streams.hpp"
 #include <algorithm>
 #include <array>
@@ -150,14 +151,19 @@ Bytes restore(const std::array<Bytes,stream_count>& data,std::size_t original,bo
 Bytes compress_archive(const Bytes& input,bool fastq) {
     auto raw=decompose(input,fastq);std::array<Bytes,stream_count> encoded;
     std::array<unsigned,stream_count> methods{};
+    raw.config.format_version=3;
     encoded[0]=detail::encode_dna(raw.data[0],raw.config);
     for(std::size_t i=1;i<stream_count;++i){encoded[i]=pack(raw.data[i]);methods[i]=1;}
+    if(fastq && !raw.data[quality_stream].empty()) {
+        auto qenc=QualityModel::encode(raw.data[quality_stream],raw.config.record_boundaries,raw.data[0].size());
+        if(!qenc.empty() && qenc.size()<encoded[quality_stream].size()){encoded[quality_stream]=std::move(qenc);methods[quality_stream]=3;}
+    }
     for(auto i:{identifier_stream,separator_stream}) {
         const auto tokens=encode_identifiers(raw.data[i],i==identifier_stream?raw.identifiers:raw.separators);
         const auto packed=pack(tokens);Bytes alternative(8);put(alternative,0,tokens.size(),8);alternative.insert(alternative.end(),packed.begin(),packed.end());
         if(alternative.size()<encoded[i].size()){encoded[i]=std::move(alternative);methods[i]=2;}
     }
-    Bytes result(header_size);std::copy(magic.begin(),magic.end(),result.begin());put(result,8,2,4);put(result,12,fastq?1:0,4);
+    Bytes result(header_size);std::copy(magic.begin(),magic.end(),result.begin());put(result,8,3,4);put(result,12,fastq?1:0,4);
     put(result,16,input.size(),8);put(result,24,raw.data[0].size(),8);put(result,32,crc32(input),4);put(result,36,stream_count,4);
     for(std::size_t i=0;i<stream_count;++i){const auto at=48+32*i;put(result,at,i+1,4);put(result,at+4,methods[i],4);put(result,at+8,raw.data[i].size(),8);put(result,at+16,encoded[i].size(),8);put(result,at+24,crc32(encoded[i]),4);}
     put(result,40,header_crc(result),4);
@@ -168,7 +174,7 @@ Bytes compress_archive(const Bytes& input,bool fastq) {
 Bytes decompress_archive(const Bytes& archive,std::size_t max_output) {
     if(archive.size()<12 || !std::equal(magic.begin(),magic.end(),archive.begin()))fail("not a new V4ZIP archive (legacy archives require the original tool)");
     const auto version=get(archive,8,4);if(version==1)return decode_archive_v1(archive,max_output);
-    if(version!=2 || archive.size()<header_size || get(archive,12,4)>1 || get(archive,36,4)!=stream_count || get(archive,44,4))fail("unsupported archive version or flags");
+    if((version!=2 && version!=3) || archive.size()<header_size || get(archive,12,4)>1 || get(archive,36,4)!=stream_count || get(archive,44,4))fail("unsupported archive version or flags");
     if(get(archive,40,4)!=header_crc(archive))fail("archive header checksum mismatch");
     const auto original64=get(archive,16,8),dna64=get(archive,24,8);
     if(original64>max_output || original64>std::numeric_limits<std::size_t>::max())fail("output exceeds --max-output");
@@ -176,9 +182,9 @@ Bytes decompress_archive(const Bytes& archive,std::size_t max_output) {
     std::array<Bytes,stream_count> data;std::array<std::size_t,stream_count> sizes{},offsets{},lengths{};std::array<unsigned,stream_count> methods{};
     std::size_t cursor=header_size;
     for(std::size_t i=0;i<stream_count;++i) {
-        const auto at=48+32*i,decoded=get(archive,at+8,8),encoded=get(archive,at+16,8);const auto method=get(archive,at+4,4);
+        const std::size_t at=48+32*i;const auto decoded=get(archive,at+8,8),encoded=get(archive,at+16,8),method=get(archive,at+4,4);
         if(get(archive,at,4)!=i+1 || get(archive,at+28,4) || !bounded(decoded,original,4))fail("invalid stream descriptor");
-        if(i==0?method!=0:(method!=1 && !((i==identifier_stream || i==separator_stream) && method==2)))fail("unsupported stream method");
+        if(i==0?method!=0:(method!=1 && !((i==identifier_stream || i==separator_stream) && method==2) && !(i==quality_stream && method==3)))fail("unsupported stream method");
         if(encoded>archive.size()-cursor)fail("truncated archive stream");
         sizes[i]=static_cast<std::size_t>(decoded);offsets[i]=cursor;lengths[i]=static_cast<std::size_t>(encoded);methods[i]=static_cast<unsigned>(method);
         if(get(archive,at+24,4)!=crc32(archive.data()+cursor,lengths[i]))fail("archive stream checksum mismatch");
@@ -187,7 +193,8 @@ Bytes decompress_archive(const Bytes& archive,std::size_t max_output) {
     if(cursor!=archive.size())fail("trailing archive data");
     if(sizes[0]!=dna64 || sizes[quality_stream]>original-static_cast<std::size_t>(dna64))fail("invalid stream counts");
     for(auto i:{structure_stream,case_stream,ambiguity_stream,terminator_stream})data[i]=unpack(archive.data()+offsets[i],lengths[i],sizes[i]);
-    const auto structure=check_structure(data,sizes,original,fastq);
+    auto structure=check_structure(data,sizes,original,fastq);
+    structure.config.format_version=static_cast<unsigned>(version);
     for(auto i:{identifier_stream,separator_stream,quality_stream}) {
         const Bytes encoded(archive.begin()+static_cast<std::ptrdiff_t>(offsets[i]),archive.begin()+static_cast<std::ptrdiff_t>(offsets[i]+lengths[i]));
         if(methods[i]==1)data[i]=unpack(encoded.data(),encoded.size(),sizes[i]);
@@ -197,6 +204,8 @@ Bytes decompress_archive(const Bytes& archive,std::size_t max_output) {
             const auto n=get(encoded,0,8);if(!bounded(n,sizes[i],5))fail("identifier token size exceeds bound");
             const auto tokens=unpack(encoded.data()+8,encoded.size()-8,static_cast<std::size_t>(n));
             data[i]=decode_identifiers(tokens,records,sizes[i]);
+        } else if(methods[i]==3) {
+            data[i]=QualityModel::decode(encoded,sizes[i],structure.config.record_boundaries);
         }
     }
     const Bytes dna(archive.begin()+static_cast<std::ptrdiff_t>(offsets[0]),archive.begin()+static_cast<std::ptrdiff_t>(offsets[0]+lengths[0]));

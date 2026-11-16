@@ -59,7 +59,7 @@ inline std::size_t read_varint(const Bytes& data,std::size_t& pos) {
 }
 inline Bytes pack(const Bytes& data) {
     Bytes result(ZSTD_compressBound(data.size()));
-    const auto n = ZSTD_compress(result.data(), result.size(), data.data(), data.size(), 9);
+    const auto n = ZSTD_compress(result.data(), result.size(), data.data(), data.size(), 19);
     if (ZSTD_isError(n)) fail("zstd compression failed");
     result.resize(n);
     return result;
