@@ -10,8 +10,9 @@ endings, and quality scores.
 
 ## v3.0 Design Premises & Architecture
 
-Premises & architecture enhancements by **Julio Fabio** (`contato@juliofabio.com`),
-building on the Klein V4 mathematical foundation:
+Originally created by **Michel Eduardo Beleza Yamagishi** based on the Klein V4
+symmetry framework (*Mathematical Grammar of Biology*), with v3.0 contributions
+and engineering premises by **Julio Fabio** (`contato@juliofabio.com`):
 
 1. **Compression Ratio First (Terabyte-Scale Readiness):** storage efficiency is
    the primary objective; models prioritize minimal bit/base output over raw
