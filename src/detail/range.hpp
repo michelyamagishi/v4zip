@@ -20,6 +20,13 @@ public:
         range_=unit*(cdf[symbol+1]-cdf[symbol]);
         while(range_<(1u<<24)) {range_<<=8; shift();}
     }
+    template<std::size_t N>
+    void put(unsigned symbol,const std::array<std::uint32_t,N>& cdf) {
+        const auto unit=range_>>16;
+        low_+=std::uint64_t(unit)*cdf[symbol];
+        range_=unit*(cdf[symbol+1]-cdf[symbol]);
+        while(range_<(1u<<24)) {range_<<=8; shift();}
+    }
     Bytes finish() {for(unsigned i=0;i<5;++i) shift(); return std::move(data_);}
 private:
     void shift() {
@@ -51,6 +58,18 @@ public:
         const auto value=code_/unit;
         if(value>=scale) throw std::runtime_error("Invalid DNA range code");
         unsigned symbol=(value>=cdf[1])+(value>=cdf[2])+(value>=cdf[3]);
+        code_-=unit*cdf[symbol];
+        range_=unit*(cdf[symbol+1]-cdf[symbol]);
+        while(range_<(1u<<24)) {range_<<=8;code_=(code_<<8)|read();}
+        return symbol;
+    }
+    template<std::size_t N>
+    unsigned get(const std::array<std::uint32_t,N>& cdf) {
+        const auto unit=range_>>16;
+        const auto value=code_/unit;
+        if(value>=scale) throw std::runtime_error("Invalid DNA range code");
+        auto it=std::upper_bound(cdf.begin()+1,cdf.end()-1,value);
+        const unsigned symbol=static_cast<unsigned>(it-cdf.begin()-1);
         code_-=unit*cdf[symbol];
         range_=unit*(cdf[symbol+1]-cdf[symbol]);
         while(range_<(1u<<24)) {range_<<=8;code_=(code_<<8)|read();}
