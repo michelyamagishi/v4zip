@@ -10,12 +10,6 @@ endings, and quality scores.
 
 ## v3.0 Pipeline Additions
 
-`v4zip` (its Klein V4 symmetry framework, core architecture, and v2.1 compressor)
-was designed and built by **Michel Eduardo Beleza Yamagishi**.
-
-Building on top of the completed v2.1 pipeline, **Julio Fabio**
-(`contato@juliofabio.com`) contributed the following v3.0 pipeline additions:
-
 1. **Compression Ratio First (Terabyte-Scale Readiness):** storage efficiency is
    the primary objective; models prioritize minimal bit/base output over raw
    single-core throughput, with dedicated handling for multi-strain / mapped
