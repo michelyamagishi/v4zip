@@ -1,4 +1,5 @@
 #pragma once
+#include "genome_profiler.hpp"
 #include "hash.hpp"
 #include "range.hpp"
 #include "weights.hpp"
@@ -137,8 +138,8 @@ public:
     }
     void reset() { active_n_ = 0; }
 
-    Distribution predict(const Bytes& hist, std::size_t pos, std::uint64_t ctx, std::size_t since_reset, unsigned& out_len) {
-        static constexpr std::array<unsigned, 3> ks{11u, 16u, 24u};
+    Distribution predict(const Bytes& hist, std::size_t pos, std::uint64_t ctx, std::size_t since_reset, unsigned& out_len, unsigned k0 = 11u) {
+        const std::array<unsigned, 3> ks{k0, 16u, 24u};
         std::array<Active, 48> choices{};
         unsigned count = 0;
         auto add = [&](Active c) {
@@ -271,9 +272,10 @@ class PredictorV3 {
     std::array<Weights, 96> local_{};
     std::array<Distribution, NUM_EXPERTS> preds_{};
 
+    DnaStrategy strategy_ = DnaStrategy::coding_large;
     unsigned bucket_ = 0;
     unsigned last_apm_ = 0;
-    std::vector<std::array<std::uint16_t, 4>> apm_{768, {1024, 1024, 1024, 1024}};
+    std::vector<std::array<std::uint16_t, 4>> apm_;
     std::uint64_t ctx_ = 0;
     std::size_t since_reset_ = 0;
     unsigned last_base_ = 0, run_len_ = 0;
@@ -316,10 +318,12 @@ class PredictorV3 {
     }
 
 public:
-    PredictorV3()
+    explicit PredictorV3(DnaStrategy strategy = DnaStrategy::coding_large)
         : d0_(1), d1_(4), d2_(16), d3_(64), d4_(256), d5_(1024), d6_(4096), d7_(16384), d8_(65536), d9_(262144),
           codon2_(3 * 16), codon5_(3 * 1024), codon8_(3 * 65536), codon_wob_(3 * 1024),
-          skip1_(256), skip2_(256), gapped_(1024), run_tbl_(4 * 8) {
+          skip1_(256), skip2_(256), gapped_(1024), run_tbl_(4 * 8),
+          strategy_(strategy),
+          apm_(strategy == DnaStrategy::coding_large ? 3072u : 768u, {1024, 1024, 1024, 1024}) {
         orbits_.reserve(orbit_orders.size());
         orbits_.emplace_back(11, 4, 21);
         orbits_.emplace_back(13, 4, 21);
@@ -366,10 +370,11 @@ public:
         skip1_[s1].predict(preds_[29], 24);
         skip2_[s2].predict(preds_[30], 24);
         gapped_[g3].predict(preds_[31], 20);
-        run_tbl_[last_base_ * 8u + std::min(7u, run_len_)].predict(preds_[32], 24);
+        run_tbl_[last_base_ * 8u + std::min(7u, run_len_)].predict(preds_[32], strategy_ == DnaStrategy::low_complex ? 48u : 24u);
 
         unsigned match_len = 0;
-        preds_[33] = match_.predict(hist, pos, ctx_, since_reset_, match_len);
+        const unsigned k0 = (strategy_ == DnaStrategy::short_reads) ? 9u : 11u;
+        preds_[33] = match_.predict(hist, pos, ctx_, since_reset_, match_len, k0);
         const unsigned match_bin = match_len == 0 ? 0u : (match_len < 24u ? 1u : 2u);
         bucket_ = ((best_ord * 3u + match_bin) * 3u + ph) % 96u;
 
@@ -408,7 +413,8 @@ public:
             sum += mixed[b];
         }
         const unsigned top_p = static_cast<unsigned>(std::min<std::uint64_t>(15u, (mixed[top] * 16u) / std::max<std::uint64_t>(1, sum)));
-        last_apm_ = (((last_base_ * 3u + ph) * 4u + top) * 16u + top_p) % 768u;
+        const unsigned apm_ctx_base = (strategy_ == DnaStrategy::coding_large && since_reset_ >= 2) ? unsigned(ctx_ & 15u) : last_base_;
+        last_apm_ = (((apm_ctx_base * 3u + ph) * 4u + top) * 16u + top_p) % static_cast<unsigned>(apm_.size());
         sum = 0;
         for (unsigned b = 0; b < 4; ++b) {
             mixed[b] = std::max<std::uint64_t>(1u, (mixed[b] * apm_[last_apm_][b]) >> 10);
@@ -424,8 +430,9 @@ public:
     }
 
     void observe(unsigned base, std::size_t) {
+        const int ldecay = (strategy_ == DnaStrategy::short_reads || strategy_ == DnaStrategy::low_complex) ? 64200 : 64800;
         update_weights(global_, base, 65280, -8192);
-        update_weights(local_[bucket_], base, 64800, -8192);
+        update_weights(local_[bucket_], base, ldecay, -8192);
         auto& ac = apm_[last_apm_];
         for (unsigned b = 0; b < 4; ++b) {
             const int target = (b == base) ? 1536 : 853;
