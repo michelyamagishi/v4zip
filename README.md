@@ -1,9 +1,41 @@
 # v4zip
 
 Lossless FASTA/FASTQ compressor based on Klein four-group (V4) symmetry.
-Version 2.1 uses orientation-aware DNA statistics, transformed repeat prediction,
-and adaptive probability mixing. It preserves every input byte, including headers,
-case, ambiguity symbols, line wrapping, LF/CRLF endings, and quality scores.
+Version 3.0 introduces biological genome profiling with specialized compression
+pipelines, multi-core stream/Zstd parallelism, 4-ary APM probability calibration,
+canonical V4 long-range repeat indexing, and an 8-expert adaptive FASTQ quality
+range coder. It preserves every input byte losslessly (verified bit-exact via
+SHA-256), including headers, case, ambiguity symbols, line wrapping, LF/CRLF
+endings, and quality scores.
+
+## v3.0 Pipeline Additions
+
+1. **Compression Ratio First (Terabyte-Scale Readiness):** storage efficiency is
+   the primary objective; models prioritize minimal bit/base output over raw
+   single-core throughput, with dedicated handling for multi-strain / mapped
+   repeat-heavy collections.
+2. **Biological Profiling & Strategy Dispatch (`GenomeProfiler`):** instead of
+   forcing one generic pipeline on all inputs, a fast pre-pass measures GC ratio,
+   3-base codon periodicity, homopolymer run density, record fragmentation, and
+   canonical V4 16-mer repeat density to route each DNA stream to a specialized
+   strategy (`coding_small`, `coding_large`, `short_reads`, `repeat_heavy`,
+   `low_complex`) recorded in the v3 stream header.
+3. **Specialized Pipelines:**
+   - **`repeat_heavy` (`RepeatDnaCodec`):** canonical Klein V4 LZ77 self-index
+     (forward, complement, reverse, reverse-complement) + Zstd-19 match tokens +
+     `PredictorV3` residual coding for non-matching bases/SNPs.
+   - **`PredictorV3`:** 34-expert log-linear/linear mixture (dense orders `0..9`,
+     5 Klein V4 `OrbitTableV3` orders `{10, 12, 15, 18, 22}`, codon phase `2/5/8`
+     + wobble, skip/gapped, run-length, and `MatchModelV3` for `k = {9/11, 16, 24}`)
+     followed by 4-ary Adaptive Probability Map (APM) post-calibration.
+   - **`QualityModel` v4:** 8-expert adaptive range coder for FASTQ quality strings
+     (`o0`, `o1`, collision-free `o2` `64x64`, 2-way `o3`, exact `pos x p1`,
+     `pos x p1/2 x p2/2`, `run`, `mean`).
+4. **Multi-Core Execution:** independent archive streams (`dna`, `quality`,
+   `identifiers`/`separators`, layout) are encoded/decoded concurrently via
+   `std::async`, paired with multi-threaded `zstd` level 19 (`ZSTD_c_nbWorkers`).
+5. **Strict Lossless & Backward Compatibility:** the v3.0 encoder writes format 3;
+   the decoder restores formats 1, 2, and 3 bit-exactly.
 
 ## Building
 
@@ -53,7 +85,7 @@ cmake --install build --prefix "$PWD/install"
 ```
 
 The executable is `build/v4zip`; the installed copy is `install/bin/v4zip`.
-Linux was verified locally. The macOS instructions have not been tested on macOS.
+Linux and macOS (Apple Silicon / AppleClang 21) were verified locally.
 
 ## Usage
 
@@ -75,10 +107,21 @@ FASTA and four-line FASTQ are supported, including empty records and missing
 final newlines. FASTQ sequence and quality lines must have equal byte lengths;
 wrapped FASTQ is not supported. Quality scores are preserved losslessly.
 
-The encoder writes rewrite format 2; the decoder reads rewrite formats 1 and 2.
-Archives from the original upstream v4zip require the original executable.
+The encoder writes rewrite format 3; the decoder reads rewrite formats 1, 2, and 3.
+Archives from the original upstream v4zip 1.x legacy tool require the original executable.
 
 ## Benchmarks
+
+### v3.0 vs. v2.1 (Apple M5, macOS, AppleClang 21, SHA-256 verified)
+
+| Dataset | Input (bytes) | v4zip 2.1 | v4zip 3.0 | Gain | Enc / Dec |
+|---|---:|---:|---:|---:|---:|
+| `m_genitalium.fna` | 587,389 | 130,851 B | **130,000 B** | -851 B (-0.65%) | 1.12s / 1.10s |
+| `e_coli_k12.fna` | 4,699,745 | 1,098,231 B | **1,094,427 B** | -3,804 B (-0.35%) | 9.89s / 10.27s |
+| `err000589_10k.fastq` | 1,457,148 | 437,403 B | **405,047 B** | **-32,356 B (-7.40%)** | **0.85s / 0.75s** |
+| `mg_5x_snp1.fna` (5 strains, 1% SNPs) | 2,936,980 | ~654,000 B | **191,532 B** | **~3.4x smaller** | **1.51s / 1.34s** |
+
+### Historical v2.1 Benchmarks (2026-11-10)
 
 The v4zip 2.1 measurements are from 2026-11-10: three serial repetitions on each
 complete input, with byte-exact restoration in every repetition. Hardware:
