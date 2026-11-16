@@ -272,6 +272,8 @@ class PredictorV3 {
     std::array<Distribution, NUM_EXPERTS> preds_{};
 
     unsigned bucket_ = 0;
+    unsigned last_apm_ = 0;
+    std::vector<std::array<std::uint16_t, 4>> apm_{768, {1024, 1024, 1024, 1024}};
     std::uint64_t ctx_ = 0;
     std::size_t since_reset_ = 0;
     unsigned last_base_ = 0, run_len_ = 0;
@@ -396,11 +398,20 @@ public:
         }
         std::array<std::uint64_t, 4> mixed{};
         std::uint64_t sum = 0;
+        unsigned top = 0;
         for (unsigned b = 0; b < 4; ++b) {
             const std::int32_t diff = std::min<std::int32_t>(8192, max_log - avg_log[b]);
             const std::uint64_t geo = lt.weight[static_cast<std::size_t>(diff)] >> 8;
             const std::uint64_t lin = lin_mix[b] / std::max<std::uint64_t>(1, lsum);
             mixed[b] = geo * 4u + lin;
+            if (mixed[b] > mixed[top]) top = b;
+            sum += mixed[b];
+        }
+        const unsigned top_p = static_cast<unsigned>(std::min<std::uint64_t>(15u, (mixed[top] * 16u) / std::max<std::uint64_t>(1, sum)));
+        last_apm_ = (((last_base_ * 3u + ph) * 4u + top) * 16u + top_p) % 768u;
+        sum = 0;
+        for (unsigned b = 0; b < 4; ++b) {
+            mixed[b] = std::max<std::uint64_t>(1u, (mixed[b] * apm_[last_apm_][b]) >> 10);
             sum += mixed[b];
         }
         Cdf cdf{0, 0, 0, 0, scale};
@@ -415,6 +426,11 @@ public:
     void observe(unsigned base, std::size_t) {
         update_weights(global_, base, 65280, -8192);
         update_weights(local_[bucket_], base, 64800, -8192);
+        auto& ac = apm_[last_apm_];
+        for (unsigned b = 0; b < 4; ++b) {
+            const int target = (b == base) ? 1536 : 853;
+            ac[b] = static_cast<std::uint16_t>(std::clamp(int(ac[b]) + ((target - int(ac[b])) >> 6), 512, 2048));
+        }
         match_.observe(base);
 
         d0_[0].observe(base, 512);

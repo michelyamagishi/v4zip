@@ -11,7 +11,7 @@ namespace v4zip::detail {
 // Multi-expert adaptive range coder for FASTQ quality strings
 class QualityModel {
     static constexpr unsigned SYMS = 96; // ASCII 33..126 + fallback
-    static constexpr unsigned NUM_EXP = 7;
+    static constexpr unsigned NUM_EXP = 8;
 
     struct HashRow {
         std::uint32_t tag = UINT32_MAX;
@@ -27,7 +27,8 @@ class QualityModel {
     std::vector<DenseRow> o1_;
     std::vector<DenseRow> o2_direct_; // 64 x 64 exact for p1, p2 < 64
     std::vector<HashRow> o2_hash_;    // fallback for >= 64
-    std::vector<HashRow> o3_;         // 2-way associative (16384 rows = 8192 buckets)
+    std::vector<HashRow> o3_;         // 2-way associative (32768 rows)
+    std::vector<HashRow> pos_p12_;    // 2-way associative (pos, p1/2, p2/2)
     std::vector<DenseRow> pos_p1_;    // 128 x 64 exact pos x p1
     std::vector<DenseRow> run_tbl_;   // 8 x 64
     std::vector<DenseRow> mean_tbl_;  // 16 x 32
@@ -93,35 +94,47 @@ class QualityModel {
 
 public:
     QualityModel()
-        : o1_(SYMS), o2_direct_(64 * 64), o2_hash_(512), o3_(16384),
+        : o1_(SYMS), o2_direct_(64 * 64), o2_hash_(512), o3_(32768), pos_p12_(32768),
           pos_p1_(128 * 64), run_tbl_(8 * 64), mean_tbl_(16 * 32) {}
 
     void build_cdf(unsigned p1, unsigned p2, unsigned p3, unsigned pos, unsigned run_len, unsigned mean_q,
                    std::array<std::uint32_t, SYMS + 1>& cdf) {
         const std::uint32_t t2 = (p1 << 8) | p2;
         const std::uint32_t t3 = (p1 << 16) | (p2 << 8) | p3;
+        const std::uint32_t tp12 = (std::min(255u, pos) << 12) | (std::min(63u, p1 >> 1) << 6) | std::min(63u, p2 >> 1);
         const unsigned pp_idx = std::min(127u, pos) * 64u + std::min(63u, p1);
         const unsigned run_idx = std::min(7u, run_len) * 64u + std::min(63u, p1);
         const unsigned mean_idx = std::min(15u, mean_q / 3u) * 32u + std::min(31u, pos >> 1);
 
         row_to_probs(o0_.c, o0_.total, 16, ep_[0]);
         row_to_probs(o1_[p1].c, o1_[p1].total, 24, ep_[1]);
+        std::array<bool, NUM_EXP> active{};
+        active[0] = true; active[1] = true; active[4] = true; active[5] = true; active[6] = true;
         if (p1 < 64u && p2 < 64u) {
             const auto& r2 = o2_direct_[p1 * 64u + p2];
             row_to_probs(r2.c, r2.total, 32, ep_[2]);
+            active[2] = (r2.total > 0);
         } else if (const auto* r2 = find_2way(o2_hash_, t2)) {
             row_to_probs(r2->c, r2->total, 32, ep_[2]);
+            active[2] = true;
         } else {
             ep_[2].fill(65536u / SYMS);
         }
         if (const auto* r3 = find_2way(o3_, t3)) {
             row_to_probs(r3->c, r3->total, 40, ep_[3]);
+            active[3] = true;
         } else {
             ep_[3].fill(65536u / SYMS);
         }
         row_to_probs(pos_p1_[pp_idx].c, pos_p1_[pp_idx].total, 28, ep_[4]);
         row_to_probs(run_tbl_[run_idx].c, run_tbl_[run_idx].total, 24, ep_[5]);
         row_to_probs(mean_tbl_[mean_idx].c, mean_tbl_[mean_idx].total, 24, ep_[6]);
+        if (const auto* rp = find_2way(pos_p12_, tp12)) {
+            row_to_probs(rp->c, rp->total, 36, ep_[7]);
+            active[7] = true;
+        } else {
+            ep_[7].fill(65536u / SYMS);
+        }
 
         last_pb_ = std::min(15u, pos >> 2);
         const auto& lt = weight_tables();
@@ -129,6 +142,7 @@ public:
         std::array<std::uint64_t, SYMS> lin_mix{};
         std::uint64_t lsum = 0;
         for (unsigned e = 0; e < NUM_EXP; ++e) {
+            if (!active[e]) continue;
             const std::uint32_t wg = lt.weight[static_cast<std::size_t>(std::clamp(-gw_[e], 0, 8192))];
             const std::uint32_t wl = lt.weight[static_cast<std::size_t>(std::clamp(-lw_[last_pb_][e], 0, 8192))];
             const std::uint64_t w = (std::uint64_t(wg) + std::uint64_t(wl) * 2u) >> 10;
@@ -178,6 +192,7 @@ public:
 
         const std::uint32_t t2 = (p1 << 8) | p2;
         const std::uint32_t t3 = (p1 << 16) | (p2 << 8) | p3;
+        const std::uint32_t tp12 = (std::min(255u, pos) << 12) | (std::min(63u, p1 >> 1) << 6) | std::min(63u, p2 >> 1);
         const unsigned pp_idx = std::min(127u, pos) * 64u + std::min(63u, p1);
         const unsigned run_idx = std::min(7u, run_len) * 64u + std::min(63u, p1);
         const unsigned mean_idx = std::min(15u, mean_q / 3u) * 32u + std::min(31u, pos >> 1);
@@ -190,6 +205,7 @@ public:
         bump_dense(pos_p1_[pp_idx], s, 512u);
         bump_dense(run_tbl_[run_idx], s, 256u);
         bump_dense(mean_tbl_[mean_idx], s, 256u);
+        bump_2way(pos_p12_, tp12, s, 384u);
     }
 
     static Bytes encode(const Bytes& qual, const std::vector<std::size_t>& read_starts, std::size_t) {

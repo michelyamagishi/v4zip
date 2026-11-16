@@ -5,6 +5,7 @@
 #include "detail/side_streams.hpp"
 #include <algorithm>
 #include <array>
+#include <future>
 
 namespace v4zip {
 Bytes decode_archive_v1(const Bytes&,std::size_t);
@@ -152,17 +153,34 @@ Bytes compress_archive(const Bytes& input,bool fastq) {
     auto raw=decompose(input,fastq);std::array<Bytes,stream_count> encoded;
     std::array<unsigned,stream_count> methods{};
     raw.config.format_version=3;
-    encoded[0]=detail::encode_dna(raw.data[0],raw.config);
-    for(std::size_t i=1;i<stream_count;++i){encoded[i]=pack(raw.data[i]);methods[i]=1;}
-    if(fastq && !raw.data[quality_stream].empty()) {
-        auto qenc=QualityModel::encode(raw.data[quality_stream],raw.config.record_boundaries,raw.data[0].size());
-        if(!qenc.empty() && qenc.size()<encoded[quality_stream].size()){encoded[quality_stream]=std::move(qenc);methods[quality_stream]=3;}
-    }
-    for(auto i:{identifier_stream,separator_stream}) {
-        const auto tokens=encode_identifiers(raw.data[i],i==identifier_stream?raw.identifiers:raw.separators);
-        const auto packed=pack(tokens);Bytes alternative(8);put(alternative,0,tokens.size(),8);alternative.insert(alternative.end(),packed.begin(),packed.end());
-        if(alternative.size()<encoded[i].size()){encoded[i]=std::move(alternative);methods[i]=2;}
-    }
+    auto dna_fut=std::async(std::launch::async,[&]{return detail::encode_dna(raw.data[0],raw.config);});
+    auto qual_fut=std::async(std::launch::async,[&]{
+        auto zp=pack(raw.data[quality_stream]);
+        if(fastq && !raw.data[quality_stream].empty()) {
+            auto qenc=QualityModel::encode(raw.data[quality_stream],raw.config.record_boundaries,raw.data[0].size());
+            if(!qenc.empty() && qenc.size()<zp.size())return std::pair<Bytes,unsigned>{std::move(qenc),3u};
+        }
+        return std::pair<Bytes,unsigned>{std::move(zp),1u};
+    });
+    auto id_fut=std::async(std::launch::async,[&]{
+        std::array<std::pair<Bytes,unsigned>,2> res;
+        std::array<std::size_t,2> ids{identifier_stream,separator_stream};
+        for(std::size_t k=0;k<2;++k) {
+            const auto i=ids[k];
+            auto zp=pack(raw.data[i]);
+            const auto tokens=encode_identifiers(raw.data[i],i==identifier_stream?raw.identifiers:raw.separators);
+            const auto packed=pack(tokens);Bytes alternative(8);put(alternative,0,tokens.size(),8);alternative.insert(alternative.end(),packed.begin(),packed.end());
+            if(alternative.size()<zp.size())res[k]={std::move(alternative),2u};
+            else res[k]={std::move(zp),1u};
+        }
+        return res;
+    });
+    for(auto i:{structure_stream,case_stream,ambiguity_stream,terminator_stream}){encoded[i]=pack(raw.data[i]);methods[i]=1;}
+    encoded[0]=dna_fut.get();
+    auto qres=qual_fut.get();encoded[quality_stream]=std::move(qres.first);methods[quality_stream]=qres.second;
+    auto ires=id_fut.get();
+    encoded[identifier_stream]=std::move(ires[0].first);methods[identifier_stream]=ires[0].second;
+    encoded[separator_stream]=std::move(ires[1].first);methods[separator_stream]=ires[1].second;
     Bytes result(header_size);std::copy(magic.begin(),magic.end(),result.begin());put(result,8,3,4);put(result,12,fastq?1:0,4);
     put(result,16,input.size(),8);put(result,24,raw.data[0].size(),8);put(result,32,crc32(input),4);put(result,36,stream_count,4);
     for(std::size_t i=0;i<stream_count;++i){const auto at=48+32*i;put(result,at,i+1,4);put(result,at+4,methods[i],4);put(result,at+8,raw.data[i].size(),8);put(result,at+16,encoded[i].size(),8);put(result,at+24,crc32(encoded[i]),4);}
@@ -195,7 +213,17 @@ Bytes decompress_archive(const Bytes& archive,std::size_t max_output) {
     for(auto i:{structure_stream,case_stream,ambiguity_stream,terminator_stream})data[i]=unpack(archive.data()+offsets[i],lengths[i],sizes[i]);
     auto structure=check_structure(data,sizes,original,fastq);
     structure.config.format_version=static_cast<unsigned>(version);
-    for(auto i:{identifier_stream,separator_stream,quality_stream}) {
+    auto dna_fut=std::async(std::launch::async,[&]{
+        const Bytes dna(archive.begin()+static_cast<std::ptrdiff_t>(offsets[0]),archive.begin()+static_cast<std::ptrdiff_t>(offsets[0]+lengths[0]));
+        return detail::decode_dna(dna,sizes[0],structure.config);
+    });
+    auto qual_fut=std::async(std::launch::async,[&]{
+        const auto i=quality_stream;
+        const Bytes encoded(archive.begin()+static_cast<std::ptrdiff_t>(offsets[i]),archive.begin()+static_cast<std::ptrdiff_t>(offsets[i]+lengths[i]));
+        if(methods[i]==3)return QualityModel::decode(encoded,sizes[i],structure.config.record_boundaries);
+        return unpack(encoded.data(),encoded.size(),sizes[i]);
+    });
+    for(auto i:{identifier_stream,separator_stream}) {
         const Bytes encoded(archive.begin()+static_cast<std::ptrdiff_t>(offsets[i]),archive.begin()+static_cast<std::ptrdiff_t>(offsets[i]+lengths[i]));
         if(methods[i]==1)data[i]=unpack(encoded.data(),encoded.size(),sizes[i]);
         else if(methods[i]==2){
@@ -204,12 +232,10 @@ Bytes decompress_archive(const Bytes& archive,std::size_t max_output) {
             const auto n=get(encoded,0,8);if(!bounded(n,sizes[i],5))fail("identifier token size exceeds bound");
             const auto tokens=unpack(encoded.data()+8,encoded.size()-8,static_cast<std::size_t>(n));
             data[i]=decode_identifiers(tokens,records,sizes[i]);
-        } else if(methods[i]==3) {
-            data[i]=QualityModel::decode(encoded,sizes[i],structure.config.record_boundaries);
         }
     }
-    const Bytes dna(archive.begin()+static_cast<std::ptrdiff_t>(offsets[0]),archive.begin()+static_cast<std::ptrdiff_t>(offsets[0]+lengths[0]));
-    data[0]=detail::decode_dna(dna,sizes[0],structure.config);
+    data[0]=dna_fut.get();
+    data[quality_stream]=qual_fut.get();
     auto result=restore(data,original,fastq);
     if(result.size()!=original || crc32(result)!=get(archive,32,4))fail("original checksum mismatch");
     return result;

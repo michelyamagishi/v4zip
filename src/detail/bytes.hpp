@@ -59,7 +59,11 @@ inline std::size_t read_varint(const Bytes& data,std::size_t& pos) {
 }
 inline Bytes pack(const Bytes& data) {
     Bytes result(ZSTD_compressBound(data.size()));
-    const auto n = ZSTD_compress(result.data(), result.size(), data.data(), data.size(), 19);
+    std::unique_ptr<ZSTD_CCtx, decltype(&ZSTD_freeCCtx)> ctx(ZSTD_createCCtx(), &ZSTD_freeCCtx);
+    if (!ctx) fail("zstd initialization failed");
+    ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_compressionLevel, 19);
+    if (data.size() >= 65536) ZSTD_CCtx_setParameter(ctx.get(), ZSTD_c_nbWorkers, 4);
+    const auto n = ZSTD_compress2(ctx.get(), result.data(), result.size(), data.data(), data.size());
     if (ZSTD_isError(n)) fail("zstd compression failed");
     result.resize(n);
     return result;
