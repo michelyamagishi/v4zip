@@ -8,11 +8,13 @@ range coder. It preserves every input byte losslessly (verified bit-exact via
 SHA-256), including headers, case, ambiguity symbols, line wrapping, LF/CRLF
 endings, and quality scores.
 
-## v3.0 Design Premises & Architecture
+## v3.0 Pipeline Additions
 
-Originally created by **Michel Eduardo Beleza Yamagishi** based on the Klein V4
-symmetry framework (*Mathematical Grammar of Biology*), with v3.0 contributions
-and engineering premises by **Julio Fabio** (`contato@juliofabio.com`):
+`v4zip` (its Klein V4 symmetry framework, core architecture, and v2.1 compressor)
+was designed and built by **Michel Eduardo Beleza Yamagishi**.
+
+Building on top of the completed v2.1 pipeline, **Julio Fabio**
+(`contato@juliofabio.com`) contributed the following v3.0 pipeline additions:
 
 1. **Compression Ratio First (Terabyte-Scale Readiness):** storage efficiency is
    the primary objective; models prioritize minimal bit/base output over raw
