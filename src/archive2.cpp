@@ -152,7 +152,7 @@ Bytes restore(const std::array<Bytes,stream_count>& data,std::size_t original,bo
 Bytes compress_archive(const Bytes& input,bool fastq) {
     auto raw=decompose(input,fastq);std::array<Bytes,stream_count> encoded;
     std::array<unsigned,stream_count> methods{};
-    raw.config.format_version=3;
+    raw.config.format_version=4;
     auto dna_fut=std::async(std::launch::async,[&]{return detail::encode_dna(raw.data[0],raw.config);});
     auto qual_fut=std::async(std::launch::async,[&]{
         auto zp=pack(raw.data[quality_stream]);
@@ -181,7 +181,7 @@ Bytes compress_archive(const Bytes& input,bool fastq) {
     auto ires=id_fut.get();
     encoded[identifier_stream]=std::move(ires[0].first);methods[identifier_stream]=ires[0].second;
     encoded[separator_stream]=std::move(ires[1].first);methods[separator_stream]=ires[1].second;
-    Bytes result(header_size);std::copy(magic.begin(),magic.end(),result.begin());put(result,8,3,4);put(result,12,fastq?1:0,4);
+    Bytes result(header_size);std::copy(magic.begin(),magic.end(),result.begin());put(result,8,4,4);put(result,12,fastq?1:0,4);
     put(result,16,input.size(),8);put(result,24,raw.data[0].size(),8);put(result,32,crc32(input),4);put(result,36,stream_count,4);
     for(std::size_t i=0;i<stream_count;++i){const auto at=48+32*i;put(result,at,i+1,4);put(result,at+4,methods[i],4);put(result,at+8,raw.data[i].size(),8);put(result,at+16,encoded[i].size(),8);put(result,at+24,crc32(encoded[i]),4);}
     put(result,40,header_crc(result),4);
@@ -192,7 +192,7 @@ Bytes compress_archive(const Bytes& input,bool fastq) {
 Bytes decompress_archive(const Bytes& archive,std::size_t max_output) {
     if(archive.size()<12 || !std::equal(magic.begin(),magic.end(),archive.begin()))fail("not a new V4ZIP archive (legacy archives require the original tool)");
     const auto version=get(archive,8,4);if(version==1)return decode_archive_v1(archive,max_output);
-    if((version!=2 && version!=3) || archive.size()<header_size || get(archive,12,4)>1 || get(archive,36,4)!=stream_count || get(archive,44,4))fail("unsupported archive version or flags");
+    if((version!=2 && version!=3 && version!=4) || archive.size()<header_size || get(archive,12,4)>1 || get(archive,36,4)!=stream_count || get(archive,44,4))fail("unsupported archive version or flags");
     if(get(archive,40,4)!=header_crc(archive))fail("archive header checksum mismatch");
     const auto original64=get(archive,16,8),dna64=get(archive,24,8);
     if(original64>max_output || original64>std::numeric_limits<std::size_t>::max())fail("output exceeds --max-output");
