@@ -1,4 +1,5 @@
 #include "v4zip/archive.hpp"
+#include "detail/partition.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,8 +9,10 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -103,7 +106,7 @@ private:
 };
 void help() {
     std::cout << "v4zip " V4ZIP_VERSION " - exact FASTA/FASTQ compression\n"
-              << "Usage: v4zip [fastq] compress INPUT OUTPUT [--verbose]\n"
+              << "Usage: v4zip [fastq] compress INPUT OUTPUT [--split SIZE | --chunk-size SIZE] [--verbose]\n"
               << "       v4zip [fastq] decompress INPUT OUTPUT [--max-output BYTES] [--verbose]\n"
               << "       v4zip --help | --version\n"
               << "Default decompression limit: 1073741824 bytes (1 GiB).\n"
@@ -123,7 +126,7 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string(argv[1]) == "--version") { std::cout << "v4zip " V4ZIP_VERSION "\n"; return 0; }
         int arg = 1;
         bool fastq = false, verbose = false, limit_set = false;
-        std::size_t limit = default_limit;
+        std::size_t limit = default_limit, split_size = 0, chunk_size = 0;
         if (arg < argc && std::string(argv[arg]) == "fastq") { fastq = true; ++arg; }
         if (arg == argc) throw std::runtime_error("expected compress or decompress; use --help");
         const std::string command = argv[arg++];
@@ -140,18 +143,114 @@ int main(int argc, char** argv) {
                 if (limit_set || command != "decompress" || ++arg == argc) throw std::runtime_error("invalid --max-output usage");
                 limit = parse_limit(argv[arg]);
                 limit_set = true;
+            } else if (options && value == "--split") {
+                if (split_size || command != "compress" || ++arg == argc) throw std::runtime_error("invalid --split usage");
+                split_size = v4zip::detail::parse_byte_size(argv[arg], "--split");
+            } else if (options && value == "--chunk-size") {
+                if (chunk_size || command != "compress" || ++arg == argc) throw std::runtime_error("invalid --chunk-size usage");
+                chunk_size = v4zip::detail::parse_byte_size(argv[arg], "--chunk-size");
             } else if (options && !value.empty() && value[0] == '-') throw std::runtime_error("unknown option: " + value);
             else paths.push_back(value);
         }
+        if (split_size && chunk_size) throw std::runtime_error("--split and --chunk-size are mutually exclusive");
         if (paths.size() != 2) throw std::runtime_error("expected exactly INPUT and OUTPUT; use --help");
-        Destination destination(paths[1]);
         const auto start = std::chrono::steady_clock::now();
-        const auto input = read_file(paths[0]);
-        const auto output = command == "compress" ? v4zip::compress_archive(input, fastq) : v4zip::decompress_archive(input, limit);
-        destination.publish(output);
+        std::size_t in_bytes = 0, out_bytes = 0;
+        if (command == "compress") {
+            const auto input = read_file(paths[0]);
+            in_bytes = input.size();
+            if (split_size) {
+                const auto archive = v4zip::compress_archive(input, fastq);
+                out_bytes = archive.size();
+                std::size_t part_idx = 1;
+                for (std::size_t off = 0; off < archive.size(); off += split_size, ++part_idx) {
+                    const std::size_t len = std::min(split_size, archive.size() - off);
+                    Destination part_dest(v4zip::detail::split_part_path(paths[1], part_idx));
+                    part_dest.publish(Bytes(archive.begin() + off, archive.begin() + off + len));
+                }
+            } else if (chunk_size) {
+                if (!v4zip::detail::is_manifest_path(paths[1])) throw std::runtime_error("manifest output must end with .v4zm");
+                Destination manifest_dest(paths[1]);
+                const auto chunks = v4zip::detail::plan_chunks(input, fastq, chunk_size);
+                const auto parent_dir = std::filesystem::path(paths[1]).parent_path();
+                v4zip::detail::Manifest manifest{fastq, input.size(), v4zip::detail::crc32(input), {}};
+                for (std::size_t i = 0; i < chunks.size(); i += 4) {
+                    const std::size_t batch_end = std::min(chunks.size(), i + 4);
+                    std::vector<std::future<Bytes>> tasks;
+                    for (std::size_t j = i; j < batch_end; ++j) {
+                        tasks.push_back(std::async(std::launch::async, [&input, &chunks, j, fastq]() {
+                            return v4zip::compress_archive(Bytes(input.begin() + chunks[j].first, input.begin() + chunks[j].first + chunks[j].second), fastq);
+                        }));
+                    }
+                    for (std::size_t j = i; j < batch_end; ++j) {
+                        const auto comp = tasks[j - i].get();
+                        out_bytes += comp.size();
+                        const auto part_name = v4zip::detail::chunk_part_name(paths[1], j + 1);
+                        const auto part_path = parent_dir.empty() ? part_name : (parent_dir / part_name).string();
+                        Destination part_dest(part_path);
+                        part_dest.publish(comp);
+                        Bytes slice(input.begin() + chunks[j].first, input.begin() + chunks[j].first + chunks[j].second);
+                        manifest.parts.push_back({part_name, chunks[j].second, v4zip::detail::crc32(slice)});
+                    }
+                }
+                const auto man_bytes = v4zip::detail::serialize_manifest(manifest);
+                out_bytes += man_bytes.size();
+                manifest_dest.publish(man_bytes);
+            } else {
+                Destination destination(paths[1]);
+                const auto output = v4zip::compress_archive(input, fastq);
+                out_bytes = output.size();
+                destination.publish(output);
+            }
+        } else {
+            Destination destination(paths[1]);
+            Bytes output;
+            if (v4zip::detail::is_split_first_part(paths[0])) {
+                Bytes archive;
+                const auto base = paths[0].substr(0, paths[0].size() - 4);
+                const std::size_t max_archive = limit <= (std::numeric_limits<std::size_t>::max() - 65536) / 2 ? limit * 2 + 65536 : std::numeric_limits<std::size_t>::max();
+                for (std::size_t idx = 1; idx <= 10000; ++idx) {
+                    const auto part_path = v4zip::detail::split_part_path(base, idx);
+                    std::error_code ec;
+                    if (!std::filesystem::is_regular_file(part_path, ec)) {
+                        if (idx == 1) throw std::runtime_error("split part 1 not found");
+                        break;
+                    }
+                    const auto part_data = read_file(part_path);
+                    in_bytes += part_data.size();
+                    if (archive.size() + part_data.size() > max_archive) throw std::runtime_error("archive exceeds size limit");
+                    archive.insert(archive.end(), part_data.begin(), part_data.end());
+                }
+                output = v4zip::decompress_archive(archive, limit);
+            } else if (v4zip::detail::is_manifest_path(paths[0])) {
+                const auto man_data = read_file(paths[0]);
+                in_bytes += man_data.size();
+                const auto manifest = v4zip::detail::parse_manifest(man_data);
+                if (manifest.total_size > limit) throw std::runtime_error("manifest total size exceeds limit");
+                output.reserve(manifest.total_size);
+                const auto parent_dir = std::filesystem::path(paths[0]).parent_path();
+                for (const auto& entry : manifest.parts) {
+                    const auto part_path = parent_dir.empty() ? entry.filename : (parent_dir / entry.filename).string();
+                    const auto part_data = read_file(part_path);
+                    in_bytes += part_data.size();
+                    const auto chunk_raw = v4zip::decompress_archive(part_data, limit - output.size());
+                    if (chunk_raw.size() != entry.raw_size) throw std::runtime_error("chunk raw size mismatch");
+                    if (v4zip::detail::crc32(chunk_raw) != entry.raw_crc) throw std::runtime_error("chunk crc mismatch");
+                    output.insert(output.end(), chunk_raw.begin(), chunk_raw.end());
+                }
+                if (output.size() != manifest.total_size) throw std::runtime_error("manifest total size mismatch");
+                if (v4zip::detail::crc32(output) != manifest.total_crc) throw std::runtime_error("manifest total crc mismatch");
+            } else {
+                const auto input = read_file(paths[0]);
+                in_bytes = input.size();
+                output = v4zip::decompress_archive(input, limit);
+            }
+            out_bytes = output.size();
+            destination.publish(output);
+        }
         if (verbose) {
             const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            std::cerr << input.size() << " input bytes -> " << output.size() << " output bytes in " << elapsed << " seconds\n";
+            std::cerr << in_bytes << " input bytes -> " << out_bytes << " output bytes in " << elapsed << " seconds\n";
         }
         return 0;
     } catch (const std::exception& error) {
