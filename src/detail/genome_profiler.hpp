@@ -24,6 +24,8 @@ struct GenomeProfile {
     double run_rate = 0.0;
     double codon_bias = 0.0;
     double repeat_16_rate = 0.0;
+    double palindrome_dyad_rate = 0.0;
+    double crispr_array_rate = 0.0;
     double avg_record_len = 0.0;
     DnaStrategy strategy = DnaStrategy::coding_large;
 };
@@ -64,27 +66,43 @@ inline GenomeProfile analyze_genome(const Bytes& dna, const DnaConfig& config) {
     if (n >= 32) {
         constexpr std::size_t BLOOM_BITS = 1u << 23; // 8M bits = 1 MB
         std::vector<std::uint64_t> bloom(BLOOM_BITS >> 6, 0);
+        std::vector<std::uint32_t> last_pos(1u << 16, 0);
         std::size_t sampled = 0, hits = 0;
+        std::size_t dyad_hits = 0, crispr_hits = 0;
         const std::uint64_t mask16 = word_mask(16);
         std::uint64_t w = 0;
         for (std::size_t i = 0; i < n; ++i) {
             w = ((w << 2) | (dna[i] & 3u)) & mask16;
             if (i >= 15 && (i & 3u) == 0) {
+                const auto rev = reverse_word(w, 16);
+                const bool is_dyad = (rev == w) || ((rev ^ mask16) == w);
+                if (is_dyad) ++dyad_hits;
+
                 const auto canon = canonical_word(w, 16).word;
                 const auto h = hash_word(canon) & (BLOOM_BITS - 1);
                 const std::uint64_t bit = std::uint64_t{1} << (h & 63u);
                 const std::size_t idx = h >> 6;
                 if (bloom[idx] & bit) ++hits;
                 else bloom[idx] |= bit;
+
+                const std::uint32_t h16 = static_cast<std::uint32_t>(hash_word(canon) & 0xFFFFu);
+                const std::uint32_t prev = last_pos[h16];
+                if (prev > 0 && (i + 1) - prev >= 20 && (i + 1) - prev <= 120) {
+                    ++crispr_hits;
+                }
+                last_pos[h16] = static_cast<std::uint32_t>(i + 1);
+
                 ++sampled;
             }
         }
         p.repeat_16_rate = sampled ? static_cast<double>(hits) / static_cast<double>(sampled) : 0.0;
+        p.palindrome_dyad_rate = sampled ? static_cast<double>(dyad_hits) / static_cast<double>(sampled) : 0.0;
+        p.crispr_array_rate = sampled ? static_cast<double>(crispr_hits) / static_cast<double>(sampled) : 0.0;
     }
 
     if (p.run_rate >= 0.25) {
         p.strategy = DnaStrategy::low_complex;
-    } else if (p.repeat_16_rate >= 0.30) {
+    } else if (p.repeat_16_rate >= 0.30 || p.crispr_array_rate >= 0.08 || p.palindrome_dyad_rate >= 0.18) {
         p.strategy = DnaStrategy::repeat_heavy;
     } else if (!config.record_boundaries.empty() && p.avg_record_len <= 250.0) {
         p.strategy = DnaStrategy::short_reads;
