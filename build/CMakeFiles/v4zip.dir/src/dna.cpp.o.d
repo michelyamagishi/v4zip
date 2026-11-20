@@ -800,4 +800,12 @@ CMakeFiles/v4zip.dir/src/dna.cpp.o: \
   /Users/jfoc/Development/v4zip/src/detail/predictor_v3.hpp \
   /Users/jfoc/Development/v4zip/src/detail/repeat_codec.hpp \
   /Users/jfoc/Development/v4zip/src/detail/bytes.hpp \
-  /opt/homebrew/include/zstd.h /opt/homebrew/include/zstd_errors.h
+  /opt/homebrew/include/zstd.h /opt/homebrew/include/zstd_errors.h \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/unordered_map \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/__hash_table \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/__utility/try_key_extraction.h \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/__type_traits/remove_const_ref.h \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/__utility/priority_tag.h \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/__iterator/erase_if_container.h \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/__iterator/ranges_iterator_traits.h \
+  /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/c++/v1/__node_handle

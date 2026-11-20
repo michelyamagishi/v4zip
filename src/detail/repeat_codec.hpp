@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 namespace v4zip::detail {
@@ -20,6 +21,40 @@ class RepeatDnaCodec {
 public:
     static Bytes encode(const Bytes& dna, const DnaConfig& config) {
         const std::size_t n = dna.size();
+        const std::uint64_t mask = word_mask(K);
+
+        // Pre-scan dna to build CRISPR / palindrome hotspot dictionary (up to 64 canonical 16-mers)
+        std::vector<std::uint64_t> dict;
+        if (n >= K) {
+            std::unordered_map<std::uint64_t, std::size_t> counts;
+            std::uint64_t run_w = 0;
+            for (std::size_t j = 0; j < n; ++j) {
+                run_w = ((run_w << 2) | (dna[j] & 3u)) & mask;
+                if (j + 1 >= K) {
+                    const auto canon = canonical_word(run_w, K);
+                    ++counts[canon.word];
+                }
+            }
+            std::vector<std::pair<std::size_t, std::uint64_t>> cand;
+            for (const auto& [word, count] : counts) {
+                if (count >= 2) cand.emplace_back(count, word);
+            }
+            std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) {
+                if (a.first != b.first) return a.first > b.first;
+                return a.second < b.second;
+            });
+            const std::size_t lim = std::min(cand.size(), std::size_t{64});
+            dict.reserve(lim);
+            for (std::size_t d = 0; d < lim; ++d) dict.push_back(cand[d].second);
+        }
+
+        auto find_dict = [&](std::uint64_t cword) -> int {
+            for (std::size_t d = 0; d < dict.size(); ++d) {
+                if (dict[d] == cword) return static_cast<int>(d);
+            }
+            return -1;
+        };
+
         // Hash table: canonical 16-mer -> last 2 positions (packed (pos << 2) | transform)
         const std::size_t tbl_size = std::size_t{1} << 22; // 4M buckets = 64 MB
         struct Entry {
@@ -33,7 +68,6 @@ public:
         DnaConfig lit_cfg;
         lit_cfg.format_version = config.format_version;
 
-        const std::uint64_t mask = word_mask(K);
         std::uint64_t w = 0;
         std::size_t lit_start = 0;
         std::size_t i = 0;
@@ -115,6 +149,17 @@ public:
                 }
             }
 
+            const int d_idx = find_dict(canon.word);
+            if (best_len < MIN_MATCH && d_idx >= 0) {
+                const std::size_t cur_start = i + 1 - K;
+                flush_lits(cur_start);
+                tokens.push_back(static_cast<std::uint8_t>(5u + canon.transform));
+                varint(tokens, static_cast<std::size_t>(d_idx));
+                i = cur_start + K;
+                lit_start = i;
+                continue;
+            }
+
             if (best_len >= MIN_MATCH) {
                 const std::size_t cur_start = i + 1 - K;
                 flush_lits(cur_start);
@@ -148,6 +193,10 @@ public:
         const Bytes enc_toks = pack(tokens);
 
         Bytes out;
+        varint(out, dict.size());
+        for (std::size_t d = 0; d < dict.size(); ++d) {
+            varint(out, dict[d]);
+        }
         varint(out, literals.size());
         varint(out, tokens.size());
         varint(out, enc_toks.size());
@@ -158,6 +207,10 @@ public:
 
     static Bytes decode(const Bytes& payload, std::size_t expected_dna) {
         std::size_t pos = 0;
+        const std::size_t dict_size = read_size(payload, pos);
+        std::vector<std::uint64_t> dict(dict_size);
+        for (std::size_t d = 0; d < dict_size; ++d) dict[d] = read_varint(payload, pos);
+
         const std::size_t lit_count = read_size(payload, pos);
         const std::size_t tok_raw_size = read_size(payload, pos);
         const std::size_t tok_enc_size = read_size(payload, pos);
@@ -202,6 +255,13 @@ public:
                 } else {
                     if (mlen > src + 1) fail("invalid reverse repeat match");
                     for (std::size_t k = 0; k < mlen; ++k) out.push_back(static_cast<std::uint8_t>(out[src - k] ^ comp));
+                }
+            } else if (kind >= 5 && kind <= 8) {
+                const std::size_t d_idx = read_varint(tokens, tp);
+                if (d_idx >= dict.size() || K > expected_dna - out.size()) fail("invalid dict repeat token");
+                const std::uint64_t w = transform_word(dict[d_idx], K, kind - 5);
+                for (unsigned k = 0; k < K; ++k) {
+                    out.push_back(static_cast<std::uint8_t>((w >> (2 * (K - 1 - k))) & 3u));
                 }
             } else {
                 fail("invalid repeat token");

@@ -1,3 +1,24 @@
-Start testing: Nov 20 02:03 -03
+Start testing: Nov 20 02:18 -03
 ----------------------------------------------------------
-End testing: Nov 20 02:03 -03
+1/1 Testing: v4zip_help
+1/1 Test: v4zip_help
+Command: "/Users/jfoc/Development/v4zip/build/v4zip" "--help"
+Directory: /Users/jfoc/Development/v4zip/build
+"v4zip_help" start time: Nov 20 02:18 -03
+Output:
+----------------------------------------------------------
+v4zip 3.0.0 - exact FASTA/FASTQ compression
+Usage: v4zip [fastq] compress INPUT OUTPUT [--verbose]
+       v4zip [fastq] decompress INPUT OUTPUT [--max-output BYTES] [--verbose]
+       v4zip --help | --version
+Default decompression limit: 1073741824 bytes (1 GiB).
+Existing outputs are never overwritten. Legacy archives require the old tool.
+<end of output>
+Test time =   0.00 sec
+----------------------------------------------------------
+Test Passed.
+"v4zip_help" end time: Nov 20 02:18 -03
+"v4zip_help" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Nov 20 02:18 -03

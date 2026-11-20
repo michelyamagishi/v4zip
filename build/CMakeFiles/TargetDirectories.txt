@@ -1,4 +1,5 @@
 /Users/jfoc/Development/v4zip/build/CMakeFiles/v4zip.dir
+/Users/jfoc/Development/v4zip/build/CMakeFiles/test.dir
 /Users/jfoc/Development/v4zip/build/CMakeFiles/edit_cache.dir
 /Users/jfoc/Development/v4zip/build/CMakeFiles/rebuild_cache.dir
 /Users/jfoc/Development/v4zip/build/CMakeFiles/list_install_components.dir

@@ -38,5 +38,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(v4zip PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+enable_testing()
+add_test(NAME v4zip_help COMMAND v4zip --help)
+
 # Install
 install(TARGETS v4zip RUNTIME DESTINATION bin)
