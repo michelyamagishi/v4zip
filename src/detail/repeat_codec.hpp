@@ -59,7 +59,7 @@ public:
         const std::size_t tbl_size = std::size_t{1} << 22; // 4M buckets = 64 MB
         struct Entry {
             std::uint64_t tag = UINT64_MAX;
-            std::array<std::uint64_t, 2> pos{};
+            std::array<std::uint64_t, 4> pos{};
         };
         std::vector<Entry> table(tbl_size);
 
@@ -86,6 +86,8 @@ public:
             const auto canon = canonical_word(word, K);
             auto& row = table[hash_word(canon.word) & (tbl_size - 1)];
             if (row.tag != canon.word) { row.tag = canon.word; row.pos = {}; }
+            row.pos[3] = row.pos[2];
+            row.pos[2] = row.pos[1];
             row.pos[1] = row.pos[0];
             row.pos[0] = (std::uint64_t(end_pos) << 2) | canon.transform;
         };
