@@ -1,0 +1,1 @@
+/usr/bin/c++  -arch arm64 -Wl,-search_paths_first -Wl,-headerpad_max_install_names CMakeFiles/v4zip.dir/src/main.cpp.o CMakeFiles/v4zip.dir/src/dna.cpp.o CMakeFiles/v4zip.dir/src/archive.cpp.o CMakeFiles/v4zip.dir/src/archive2.cpp.o CMakeFiles/v4zip.dir/src/side_streams.cpp.o -o v4zip  /opt/homebrew/lib/libzstd.dylib
