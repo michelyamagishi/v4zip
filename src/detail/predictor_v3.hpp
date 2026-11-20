@@ -222,7 +222,8 @@ public:
         for (unsigned i = 0; i < active_n_; ++i) {
             const auto& c = active_[i];
             const unsigned str = std::max(1u, c.len - std::min(c.len, 9u));
-            const unsigned wt = std::max(1u, str * str / (1u + 6u * c.err));
+            const bool is_cp = (c.dir < 0) || (pos >= c.recent && (pos - c.recent) >= 20 && (pos - c.recent) <= 120);
+            const unsigned wt = std::max(1u, (str * str * (is_cp ? 2u : 1u)) / (1u + 6u * c.err));
             const unsigned err_p = std::max(4u, 4096u / (1u + str * 2u));
             for (unsigned b = 0; b < 4; ++b)
                 votes[b] += std::uint64_t(wt) * (b == c.base ? scale - 3u * err_p : err_p);
@@ -251,13 +252,7 @@ public:
 };
 
 class PredictorV3 {
-    // Experts (34 4-way + 2 binary):
-    // 0..9: dense orders 0..9
-    // 10..24: 5 orbit orders {10, 12, 15, 18, 22} x 3 views (raw, rc, pooled)
-    // 25..28: codon phase (pos%3, ctx2/5/8/wobble)
-    // 29..31: sparse skip1, skip2, gapped
-    // 32: run-length (last_base, run_len)
-    // 33: MatchModelV3
+    // Experts (34 4-way): dense 0..9, orbits 10..24, codon 25..28, sparse 29..31, run 32, match 33
     static constexpr unsigned NUM_EXPERTS = 34;
     static constexpr std::array<unsigned, 5> orbit_orders{10, 12, 15, 18, 22};
 

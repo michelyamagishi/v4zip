@@ -31,8 +31,8 @@ public:
             for (std::size_t j = 0; j < n; ++j) {
                 run_w = ((run_w << 2) | (dna[j] & 3u)) & mask;
                 if (j + 1 >= K) {
-                    const auto canon = canonical_word(run_w, K);
-                    ++counts[canon.word];
+                    const auto rev = reverse_word(run_w, K);
+                    if (rev == run_w || (rev ^ mask) == run_w) ++counts[canonical_word(run_w, K).word];
                 }
             }
             std::vector<std::pair<std::size_t, std::uint64_t>> cand;
@@ -150,7 +150,7 @@ public:
             }
 
             const int d_idx = find_dict(canon.word);
-            if (best_len < K + 6 && d_idx >= 0) {
+            if (best_len < MIN_MATCH && d_idx >= 0) {
                 const std::size_t cur_start = i + 1 - K;
                 flush_lits(cur_start);
                 tokens.push_back(static_cast<std::uint8_t>(5u + canon.transform));
