@@ -150,7 +150,7 @@ public:
             }
 
             const int d_idx = find_dict(canon.word);
-            if (best_len < MIN_MATCH && d_idx >= 0) {
+            if (best_len < K + 6 && d_idx >= 0) {
                 const std::size_t cur_start = i + 1 - K;
                 flush_lits(cur_start);
                 tokens.push_back(static_cast<std::uint8_t>(5u + canon.transform));
@@ -209,7 +209,7 @@ public:
         std::size_t pos = 0;
         const std::size_t dict_size = read_size(payload, pos);
         std::vector<std::uint64_t> dict(dict_size);
-        for (std::size_t d = 0; d < dict_size; ++d) dict[d] = read_varint(payload, pos);
+        for (std::size_t d = 0; d < dict_size; ++d) dict[d] = read_size(payload, pos);
 
         const std::size_t lit_count = read_size(payload, pos);
         const std::size_t tok_raw_size = read_size(payload, pos);
@@ -257,7 +257,7 @@ public:
                     for (std::size_t k = 0; k < mlen; ++k) out.push_back(static_cast<std::uint8_t>(out[src - k] ^ comp));
                 }
             } else if (kind >= 5 && kind <= 8) {
-                const std::size_t d_idx = read_varint(tokens, tp);
+                const std::size_t d_idx = read_size(tokens, tp);
                 if (d_idx >= dict.size() || K > expected_dna - out.size()) fail("invalid dict repeat token");
                 const std::uint64_t w = transform_word(dict[d_idx], K, kind - 5);
                 for (unsigned k = 0; k < K; ++k) {
