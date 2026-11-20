@@ -14,6 +14,7 @@ Lossless FASTA/FASTQ compressor based on Klein four-group ($V_4$) and dihedral (
 
 To keep this README concise, detailed topics are organized in [`docs/`](docs/):
 
+- **[User Guide (Use Cases, Genomes, Complexity & Transfer)](docs/user-guide.md)** — Decision matrix and practical examples by genome type, size, complexity, and data transfer channel.
 - **[Architecture & Compression Methods](docs/architecture.md)** — `GenomeProfiler`, 37-expert `PredictorV3`, `RepeatDnaCodec` ($D_4$ + CRISPR/Palindrome Hotspot Index Table), and `QualityModel` v4.
 - **[Partitioning Strategies (`--split` & `--chunk-size`)](docs/partitioning.md)** — Exact volume splitting vs. parallel biological chunked manifests (`.v4zm`).
 - **[Archive Formats & Compatibility](docs/formats-and-compatibility.md)** — Format 1/2/3/4 compatibility matrix and decoder hardening.
