@@ -2,6 +2,7 @@
 #include "bytes.hpp"
 #include "hash.hpp"
 #include "predictor_v3.hpp"
+#include "predictor_v3_legacy.hpp"
 #include "range.hpp"
 #include "v4zip/dna.hpp"
 #include <algorithm>
@@ -37,7 +38,7 @@ public:
             }
             std::vector<std::pair<std::size_t, std::uint64_t>> cand;
             for (const auto& [word, count] : counts) {
-                if (count >= 2) cand.emplace_back(count, word);
+                if (count >= 3) cand.emplace_back(count, word);
             }
             std::sort(cand.begin(), cand.end(), [](const auto& a, const auto& b) {
                 if (a.first != b.first) return a.first > b.first;
@@ -182,7 +183,7 @@ public:
             ++i;
         }
         flush_lits(n);
-
+        table.clear(); table.shrink_to_fit();
         // Compress literals with PredictorV3 and tokens with Zstd-19
         PredictorV3 model(DnaStrategy::coding_large);
         RangeEncoder enc;
@@ -207,32 +208,48 @@ public:
         return out;
     }
 
-    static Bytes decode(const Bytes& payload, std::size_t expected_dna) {
+    static Bytes decode(const Bytes& payload, std::size_t expected_dna, unsigned format_version = 4) {
         std::size_t pos = 0;
-        const std::size_t dict_size = read_size(payload, pos);
-        std::vector<std::uint64_t> dict(dict_size);
-        for (std::size_t d = 0; d < dict_size; ++d) dict[d] = read_size(payload, pos);
+        std::vector<std::uint64_t> dict;
+        if (format_version >= 4) {
+            const std::size_t dict_size = read_size(payload, pos);
+            if (dict_size > 64) fail("invalid repeat dict size");
+            dict.resize(dict_size);
+            for (std::size_t d = 0; d < dict_size; ++d) {
+                dict[d] = read_size(payload, pos);
+                if (dict[d] > 0xFFFFFFFFull) fail("invalid repeat dict word");
+            }
+        }
 
         const std::size_t lit_count = read_size(payload, pos);
         const std::size_t tok_raw_size = read_size(payload, pos);
         const std::size_t tok_enc_size = read_size(payload, pos);
+        if (tok_raw_size > expected_dna * 2 + 64) fail("invalid repeat token size");
         if (tok_enc_size > payload.size() - pos) fail("truncated repeat tokens");
         const Bytes tokens = unpack(payload.data() + pos, tok_enc_size, tok_raw_size);
         pos += tok_enc_size;
         const Bytes enc_lits(payload.begin() + static_cast<std::ptrdiff_t>(pos), payload.end());
 
         if (lit_count > expected_dna) fail("invalid repeat literal count");
-        PredictorV3 model(DnaStrategy::coding_large);
         RangeDecoder dec(enc_lits);
         Bytes literals;
         literals.reserve(lit_count);
-        for (std::size_t j = 0; j < lit_count; ++j) {
-            const auto base = dec.get(model.predict(literals, j));
-            literals.push_back(static_cast<std::uint8_t>(base));
-            model.observe(base, j);
+        if (format_version == 3) {
+            PredictorV3Legacy model(DnaStrategy::coding_large);
+            for (std::size_t j = 0; j < lit_count; ++j) {
+                const auto base = dec.get(model.predict(literals, j));
+                literals.push_back(static_cast<std::uint8_t>(base));
+                model.observe(base, j);
+            }
+        } else {
+            PredictorV3 model(DnaStrategy::coding_large);
+            for (std::size_t j = 0; j < lit_count; ++j) {
+                const auto base = dec.get(model.predict(literals, j));
+                literals.push_back(static_cast<std::uint8_t>(base));
+                model.observe(base, j);
+            }
         }
         dec.finish();
-
         Bytes out;
         out.reserve(expected_dna);
         std::size_t tp = 0, lp = 0;
