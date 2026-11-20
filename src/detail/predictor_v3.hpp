@@ -254,16 +254,16 @@ public:
 };
 
 class PredictorV3 {
-    // Experts (34 4-way): dense 0..9, orbits 10..24, codon 25..28, sparse 29..31, run 32, match 33
-    static constexpr unsigned NUM_EXPERTS = 34;
+    // Experts (37 4-way): dense 0..9, orbits 10..24, codon 25..28, sparse 29..31, run 32, match 33, rc 34..36
+    static constexpr unsigned NUM_EXPERTS = 37;
     static constexpr std::array<unsigned, 5> orbit_orders{10, 12, 15, 18, 22};
 
     std::vector<CompactCounter> d0_, d1_, d2_, d3_, d4_, d5_, d6_, d7_, d8_, d9_;
     std::vector<CompactCounter> codon2_, codon5_, codon8_, codon_wob_;
     std::vector<CompactCounter> skip1_, skip2_, gapped_, run_tbl_;
+    std::vector<std::uint16_t> rc8_, rc9_, rc10_;
     std::vector<OrbitTableV3> orbits_;
     MatchModelV3 match_;
-
     using Weights = std::array<std::int32_t, NUM_EXPERTS>;
     Weights global_{};
     std::array<Weights, 96> local_{};
@@ -286,6 +286,18 @@ class PredictorV3 {
             mx = std::max(mx, w[e]);
         }
         for (auto& v : w) v = std::max(clamp_min, v - mx);
+    }
+    static void eval_rc_exact(const std::vector<std::uint16_t>& tbl, std::uint64_t ctx, unsigned len, unsigned smooth, Distribution& out) {
+        const std::uint64_t m = word_mask(len); std::array<std::uint64_t, 4> c{};
+        for (unsigned b = 0; b < 4; ++b) { const auto w = ((ctx << 2) | b) & m; const auto rc = reverse_word(w, len) ^ m; c[b] = (w == rc) ? tbl[w] : (std::uint64_t(tbl[w]) + tbl[rc]); }
+        const std::uint64_t rec = (UINT64_C(1) << 48) / ((c[0] + c[1] + c[2] + c[3]) * smooth + 4);
+        for (unsigned b = 0; b < 4; ++b) out[b] = static_cast<std::uint32_t>(((c[b] * smooth + 1) * rec) >> 32);
+    }
+    static void obs_rc_exact(std::vector<std::uint16_t>& tbl, std::uint64_t word, unsigned len, unsigned cap) {
+        const std::uint64_t w = word & word_mask(len); if (tbl[w] < 65000u) ++tbl[w];
+        const std::uint64_t bc = w & ~std::uint64_t(3u);
+        if (unsigned(tbl[bc]) + tbl[bc | 1] + tbl[bc | 2] + tbl[bc | 3] >= cap)
+            for (unsigned b = 0; b < 4; ++b) tbl[bc | b] = static_cast<std::uint16_t>((tbl[bc | b] + 1u) >> 1);
     }
 
     static void eval_orbit(OrbitTableV3& tbl, std::uint64_t ctx, unsigned smooth, Distribution* out3) {
@@ -318,7 +330,7 @@ public:
     explicit PredictorV3(DnaStrategy strategy = DnaStrategy::coding_large)
         : d0_(1), d1_(4), d2_(16), d3_(64), d4_(256), d5_(1024), d6_(4096), d7_(16384), d8_(65536), d9_(262144),
           codon2_(3 * 16), codon5_(3 * 1024), codon8_(3 * 65536), codon_wob_(3 * 1024),
-          skip1_(256), skip2_(256), gapped_(1024), run_tbl_(4 * 8),
+          skip1_(256), skip2_(256), gapped_(1024), run_tbl_(4 * 8), rc8_(1u << 16, 0), rc9_(1u << 18, 0), rc10_(1u << 20, 0),
           strategy_(strategy),
           apm_(strategy == DnaStrategy::coding_large ? 3072u : 768u, {1024, 1024, 1024, 1024}) {
         orbits_.reserve(orbit_orders.size());
@@ -372,6 +384,9 @@ public:
         unsigned match_len = 0;
         const unsigned k0 = (strategy_ == DnaStrategy::short_reads) ? 9u : 11u;
         preds_[33] = match_.predict(hist, pos, ctx_, since_reset_, match_len, k0);
+        if (since_reset_ >= 7) eval_rc_exact(rc8_, ctx_, 8, 16, preds_[34]); else preds_[34] = {16384, 16384, 16384, 16384};
+        if (since_reset_ >= 8) eval_rc_exact(rc9_, ctx_, 9, 12, preds_[35]); else preds_[35] = {16384, 16384, 16384, 16384};
+        if (since_reset_ >= 9) eval_rc_exact(rc10_, ctx_, 10, 8, preds_[36]); else preds_[36] = {16384, 16384, 16384, 16384};
         const unsigned match_bin = match_len == 0 ? 0u : (match_len < 24u ? 1u : 2u);
         bucket_ = ((best_ord * 3u + match_bin) * 3u + ph) % 96u;
 
@@ -469,6 +484,9 @@ public:
         else { last_base_ = base; run_len_ = 1; }
 
         const std::uint64_t word = (ctx_ << 2) | base;
+        if (since_reset_ >= 7) obs_rc_exact(rc8_, word, 8, 96);
+        if (since_reset_ >= 8) obs_rc_exact(rc9_, word, 9, 96);
+        if (since_reset_ >= 9) obs_rc_exact(rc10_, word, 10, 64);
         for (unsigned i = 0; i < orbit_orders.size(); ++i)
             if (since_reset_ >= orbit_orders[i]) orbits_[i].observe(word);
         ctx_ = word & word_mask(24);
