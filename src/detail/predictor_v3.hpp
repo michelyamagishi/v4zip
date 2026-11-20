@@ -112,7 +112,7 @@ public:
 class MatchModelV3 {
     struct Slot {
         std::uint64_t tag = UINT64_MAX;
-        std::array<std::uint32_t, 2> pos{};
+        std::array<std::uint32_t, 4> pos{};
     };
     struct Active {
         std::size_t next = 0, recent = 0;
@@ -120,7 +120,7 @@ class MatchModelV3 {
         unsigned comp = 0, len = 0, err = 0, base = 0;
         std::uint32_t win = 0;
     };
-    std::array<std::vector<Slot>, 3> slots_;
+    std::array<std::vector<Slot>, 4> slots_;
     std::array<Active, 4> active_{};
     unsigned active_n_ = 0;
 
@@ -132,15 +132,16 @@ class MatchModelV3 {
 
 public:
     MatchModelV3() {
-        slots_[0].resize(std::size_t{1} << 22);
-        slots_[1].resize(std::size_t{1} << 23);
-        slots_[2].resize(std::size_t{1} << 23);
+        slots_[0].resize(std::size_t{1} << 21);
+        slots_[1].resize(std::size_t{1} << 22);
+        slots_[2].resize(std::size_t{1} << 22);
+        slots_[3].resize(std::size_t{1} << 22);
     }
     void reset() { active_n_ = 0; }
 
     Distribution predict(const Bytes& hist, std::size_t pos, std::uint64_t ctx, std::size_t since_reset, unsigned& out_len, unsigned k0 = 11u) {
-        const std::array<unsigned, 3> ks{k0, 16u, 24u};
-        std::array<Active, 48> choices{};
+        const std::array<unsigned, 4> ks{k0, 13u, 16u, 24u};
+        std::array<Active, 64> choices{};
         unsigned count = 0;
         auto add = [&](Active c) {
             if (c.next >= pos) return;
@@ -158,7 +159,7 @@ public:
             add(active_[i]);
             if (int(active_[i].len) - 4 * int(active_[i].err) <= 96) keep_top = false;
         }
-        for (unsigned w = 0; w < 3; ++w) {
+        for (unsigned w = 0; w < 4; ++w) {
             const unsigned k = ks[w];
             if (since_reset < k) continue;
             const auto word = ctx & word_mask(k);
@@ -199,6 +200,8 @@ public:
                 row.pos = {};
             }
             if (pos < (std::size_t{1} << 30)) {
+                row.pos[3] = row.pos[2];
+                row.pos[2] = row.pos[1];
                 row.pos[1] = row.pos[0];
                 row.pos[0] = static_cast<std::uint32_t>((pos << 2) | canon.transform);
             }
@@ -222,8 +225,7 @@ public:
         for (unsigned i = 0; i < active_n_; ++i) {
             const auto& c = active_[i];
             const unsigned str = std::max(1u, c.len - std::min(c.len, 9u));
-            const bool is_cp = (c.dir < 0) || (pos >= c.recent && (pos - c.recent) >= 20 && (pos - c.recent) <= 120);
-            const unsigned wt = std::max(1u, (str * str * (is_cp ? 2u : 1u)) / (1u + 6u * c.err));
+            const unsigned wt = std::max(1u, str * str / (1u + 6u * c.err));
             const unsigned err_p = std::max(4u, 4096u / (1u + str * 2u));
             for (unsigned b = 0; b < 4; ++b)
                 votes[b] += std::uint64_t(wt) * (b == c.base ? scale - 3u * err_p : err_p);
